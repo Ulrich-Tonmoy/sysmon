@@ -10,6 +10,12 @@ pub const HISTORY_LEN: usize = 120;
 pub const MUTED: Color = Color::DarkGray;
 pub const ACCENT: Color = Color::Cyan;
 pub const RAM_COLOR: Color = Color::Magenta;
+pub const COLOR_DANGER: Color = Color::Red;
+pub const COLOR_WARNING: Color = Color::Yellow;
+pub const COLOR_NORMAL: Color = Color::Green;
+pub const COLOR_GAUGE_BG: Color = Color::Black;
+pub const TABLE_HIGHLIGHT_FOREGROUND: Color = Color::White;
+pub const TABLE_HIGHLIGHT_BACKGROUND: Color = Color::Blue;
 
 pub fn panel(title: &str) -> Block<'static> {
     Block::bordered()
@@ -20,11 +26,11 @@ pub fn panel(title: &str) -> Block<'static> {
 
 pub fn level_color(percent: f64) -> Color {
     if percent < 50.0 {
-        Color::Green
+        COLOR_NORMAL
     } else if percent < 80.0 {
-        Color::Yellow
+        COLOR_WARNING
     } else {
-        Color::Red
+        COLOR_DANGER
     }
 }
 
@@ -47,7 +53,7 @@ pub fn usage_gauge(name: &str, used: u64, total: u64) -> Gauge<'static> {
             gb(used),
             gb(total),
         ))
-        .gauge_style(Style::new().fg(level_color(pct)).bg(Color::Black))
+        .gauge_style(Style::new().fg(level_color(pct)).bg(COLOR_GAUGE_BG))
         .use_unicode(true)
 }
 
