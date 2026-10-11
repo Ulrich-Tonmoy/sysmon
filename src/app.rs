@@ -1,14 +1,20 @@
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Gauge, LineGauge, Paragraph, Sparkline};
+use ratatui::widgets::{
+    Axis, Block, BorderType, Chart, Dataset, GraphType, LineGauge, Paragraph, Sparkline,
+};
 use ratatui::{DefaultTerminal, Frame};
 use std::collections::VecDeque;
 use std::time::Instant;
 use sysinfo::{Disks, MINIMUM_CPU_UPDATE_INTERVAL, System};
 
-use crate::utils::{ACCENT, HISTORY_LEN, MUTED, TICK_RATE, level_color, panel, push_history};
+use crate::utils::{
+    ACCENT, HISTORY_LEN, MUTED, RAM_COLOR, TICK_RATE, level_color, panel, percent, push_history,
+    to_points, usage_gauge,
+};
 
 pub struct App {
     running: bool,
@@ -17,6 +23,7 @@ pub struct App {
     host_name: String,
     os_name: String,
     cpu_history: VecDeque<f64>,
+    ram_history: VecDeque<f64>,
 }
 
 impl App {
@@ -32,6 +39,7 @@ impl App {
             host_name: System::host_name().unwrap_or_else(|| "unknown".into()),
             os_name: System::long_os_version().unwrap_or_else(|| "unknown OS".into()),
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
+            ram_history: VecDeque::with_capacity(HISTORY_LEN),
         };
 
         app.on_tick();
@@ -76,6 +84,10 @@ impl App {
         self.system.refresh_memory();
         self.disks.refresh(true);
         push_history(&mut self.cpu_history, self.system.global_cpu_usage() as f64);
+        push_history(
+            &mut self.ram_history,
+            percent(self.system.used_memory(), self.system.total_memory()),
+        );
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -97,7 +109,7 @@ impl App {
         self.render_header(frame, header);
         self.render_cpu(frame, cpu);
         self.render_memory(frame, memory);
-        frame.render_widget(panel("History"), history);
+        self.render_history(frame, history);
         frame.render_widget(panel("Processes"), processes);
         self.render_footer(frame, footer);
     }
@@ -187,23 +199,70 @@ impl App {
     }
 
     fn render_memory(&mut self, frame: &mut Frame, area: Rect) {
-        let gb = |bytes: u64| bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+        let block = panel("Memory");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let [ram_area, swap_area, disk_area] = Layout::vertical([Constraint::Length(1); 3])
+            .spacing(1)
+            .areas(inner);
 
         let sys = &self.system;
 
-        let lines = vec![
-            Line::from(format!(
-                "RAM {:.1}/{:.1} GB",
-                gb(sys.used_memory()),
-                gb(sys.total_memory()),
-            )),
-            Line::from(format!(
-                "Swap {:.1}/{:.1} GB",
-                gb(sys.used_swap()),
-                gb(sys.total_swap()),
-            )),
+        frame.render_widget(
+            usage_gauge("RAM", sys.used_memory(), sys.total_memory()),
+            ram_area,
+        );
+        frame.render_widget(
+            usage_gauge("Swap", sys.used_swap(), sys.total_swap()),
+            swap_area,
+        );
+
+        if let Some(disk) = self.disks.list().first() {
+            let total = disk.total_space();
+            let used = total - disk.available_space();
+            let label = format!("Disk {}", disk.mount_point().display());
+            frame.render_widget(usage_gauge(&label, used, total), disk_area);
+        }
+    }
+
+    fn render_history(&self, frame: &mut Frame, area: Rect) {
+        let cpu_points = to_points(&self.cpu_history);
+        let ram_points = to_points(&self.ram_history);
+
+        let datasets = vec![
+            Dataset::default()
+                .name("CPU")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(ACCENT)
+                .data(&cpu_points),
+            Dataset::default()
+                .name("RAM")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(RAM_COLOR)
+                .data(&ram_points),
         ];
 
-        frame.render_widget(Paragraph::new(lines).block(panel("Memory")), area);
+        let x_axis = Axis::default()
+            .bounds([0.0, (HISTORY_LEN - 1) as f64])
+            .labels(["60s ago", "30s", "now"])
+            .style(MUTED);
+        let y_axis = Axis::default()
+            .bounds([0.0, 100.0])
+            .labels(["0%", "50%", "100%"])
+            .style(MUTED);
+
+        let legend = Line::from(vec![("CPU".fg(ACCENT)), ("/RAM".fg(RAM_COLOR))]).right_aligned();
+        let block = panel("History 60s").title_top(legend);
+
+        let chart = Chart::new(datasets)
+            .block(block)
+            .x_axis(x_axis)
+            .y_axis(y_axis)
+            .legend_position(None);
+
+        frame.render_widget(chart, area);
     }
 }
