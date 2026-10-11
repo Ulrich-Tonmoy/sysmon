@@ -295,11 +295,26 @@ impl App {
             swap_area,
         );
 
-        if let Some(disk) = self.disks.list().first() {
-            let total = disk.total_space();
-            let used = total - disk.available_space();
-            let label = format!("Disk {}", disk.mount_point().display());
-            frame.render_widget(usage_gauge(&label, used, total), disk_area);
+        let disk_list = self.disks.list();
+        let disk_count = disk_list.len();
+
+        if disk_count > 0 {
+            let constraints = vec![Constraint::Length(1); disk_count];
+            let disk_chunks = Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints(constraints)
+                .spacing(1)
+                .split(disk_area);
+
+            for (i, disk) in disk_list.iter().enumerate() {
+                let total = disk.total_space();
+                let used = total - disk.available_space();
+                let label = format!("Disk {}", disk.mount_point().display());
+
+                if let Some(target_chunk) = disk_chunks.get(i) {
+                    frame.render_widget(usage_gauge(&label, used, total), *target_chunk);
+                }
+            }
         }
     }
 
