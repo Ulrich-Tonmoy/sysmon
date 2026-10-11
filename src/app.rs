@@ -2,18 +2,21 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, BorderType, Gauge, LineGauge, Paragraph, Sparkline};
 use ratatui::{DefaultTerminal, Frame};
+use std::collections::VecDeque;
 use std::time::Instant;
-use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
+use sysinfo::{Disks, MINIMUM_CPU_UPDATE_INTERVAL, System};
 
-use crate::utils::{ACCENT, MUTED, TICK_RATE, panel};
+use crate::utils::{ACCENT, HISTORY_LEN, MUTED, TICK_RATE, level_color, panel, push_history};
 
 pub struct App {
     running: bool,
     system: System,
+    disks: Disks,
     host_name: String,
     os_name: String,
+    cpu_history: VecDeque<f64>,
 }
 
 impl App {
@@ -25,8 +28,10 @@ impl App {
         let mut app = Self {
             running: true,
             system,
+            disks: Disks::new_with_refreshed_list(),
             host_name: System::host_name().unwrap_or_else(|| "unknown".into()),
             os_name: System::long_os_version().unwrap_or_else(|| "unknown OS".into()),
+            cpu_history: VecDeque::with_capacity(HISTORY_LEN),
         };
 
         app.on_tick();
@@ -69,12 +74,17 @@ impl App {
     pub fn on_tick(&mut self) {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
+        self.disks.refresh(true);
+        push_history(&mut self.cpu_history, self.system.global_cpu_usage() as f64);
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
+        let core_rows = self.system.cpus().len().div_ceil(2) as u16;
+        let top_height = (core_rows + 3).max(5) + 2;
+
         let [header, top, history, processes, footer] = Layout::vertical([
             Constraint::Length(3),
-            Constraint::Length(10),
+            Constraint::Length(top_height),
             Constraint::Length(10),
             Constraint::Fill(1),
             Constraint::Length(1),
@@ -119,32 +129,61 @@ impl App {
             ]
         };
 
-        let spans: Vec<Span> = [
-            key("q or esc", "quit"),
-            // key("q", "quit"),
-            // key("q", "quit"),
-            // key("q", "quit"),
-            // key("q", "quit"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let spans: Vec<Span> = [key("q or esc", "quit")].into_iter().flatten().collect();
 
         frame.render_widget(Line::from(spans), area);
     }
 
     fn render_cpu(&mut self, frame: &mut Frame, area: Rect) {
         let average = self.system.global_cpu_usage();
-        let lines: Vec<Line> = self
-            .system
-            .cpus()
-            .iter()
-            .enumerate()
-            .map(|(i, cpu)| Line::from(format!("core {i:>2}\t{:>3.0}%", cpu.cpu_usage())))
-            .collect();
 
         let block = panel(&format!("CPU {average:.0}%"));
-        frame.render_widget(Paragraph::new(lines).block(block), area);
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let core_rows = self.system.cpus().len().div_ceil(2) as u16;
+
+        let [cores_area, spark_area] =
+            Layout::vertical([Constraint::Length(core_rows), Constraint::Fill(1)])
+                .spacing(2)
+                .areas(inner);
+
+        let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
+            .spacing(2)
+            .areas(cores_area);
+
+        for (i, cpu) in self.system.cpus().iter().enumerate() {
+            let usage = cpu.cpu_usage() as f64;
+            let column = if i % 2 == 0 { left } else { right };
+            let row = Rect {
+                y: column.y + (i / 2) as u16,
+                height: 1,
+                ..column
+            };
+
+            let gauge = LineGauge::default()
+                .ratio((usage / 100.0).clamp(0.0, 1.0))
+                .label(format!("{:>2} {:>3.0}%", i + 1, usage))
+                .filled_symbol("█")
+                .unfilled_symbol("░")
+                .filled_style(level_color(usage))
+                .unfilled_style(MUTED);
+
+            frame.render_widget(gauge, row);
+        }
+
+        let width = spark_area.width as usize;
+        let skip = self.cpu_history.len().saturating_sub(width);
+        let data: Vec<u64> = self
+            .cpu_history
+            .iter()
+            .skip(skip)
+            .map(|v| *v as u64)
+            .collect();
+
+        let sparkline = Sparkline::default().data(&data).max(100).style(ACCENT);
+        frame.render_widget(sparkline, spark_area);
     }
 
     fn render_memory(&mut self, frame: &mut Frame, area: Rect) {
