@@ -5,16 +5,32 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use std::time::Instant;
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 use crate::utils::{ACCENT, MUTED, TICK_RATE, panel};
 
 pub struct App {
     running: bool,
+    system: System,
+    host_name: String,
+    os_name: String,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self { running: true }
+        let mut system = System::new_all();
+        std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+        system.refresh_cpu_usage();
+
+        let mut app = Self {
+            running: true,
+            system,
+            host_name: System::host_name().unwrap_or_else(|| "unknown".into()),
+            os_name: System::long_os_version().unwrap_or_else(|| "unknown OS".into()),
+        };
+
+        app.on_tick();
+        app
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
@@ -50,7 +66,10 @@ impl App {
         }
     }
 
-    pub fn on_tick(&mut self) {}
+    pub fn on_tick(&mut self) {
+        self.system.refresh_cpu_usage();
+        self.system.refresh_memory();
+    }
 
     pub fn render(&mut self, frame: &mut Frame) {
         let [header, top, history, processes, footer] = Layout::vertical([
@@ -66,8 +85,8 @@ impl App {
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(top);
 
         self.render_header(frame, header);
-        frame.render_widget(panel("CPU"), cpu);
-        frame.render_widget(panel("Memory"), memory);
+        self.render_cpu(frame, cpu);
+        self.render_memory(frame, memory);
         frame.render_widget(panel("History"), history);
         frame.render_widget(panel("Processes"), processes);
         self.render_footer(frame, footer);
@@ -75,10 +94,14 @@ impl App {
 
     pub fn render_header(&mut self, frame: &mut Frame, area: Rect) {
         let sep = Span::styled(" | ", MUTED);
+        let uptime = System::uptime();
+
         let line = Line::from(vec![
             "System Monitor".bold().fg(ACCENT),
-            sep,
-            Span::raw("Monitor your CPU, Memory, Processes and more..."),
+            sep.clone(),
+            self.host_name.clone().bold(),
+            sep.clone(),
+            Span::raw(format!("up {}h: {}m", uptime / 3600, uptime % 3600 / 60)),
         ]);
 
         let block = Block::bordered()
@@ -108,5 +131,40 @@ impl App {
         .collect();
 
         frame.render_widget(Line::from(spans), area);
+    }
+
+    fn render_cpu(&mut self, frame: &mut Frame, area: Rect) {
+        let average = self.system.global_cpu_usage();
+        let lines: Vec<Line> = self
+            .system
+            .cpus()
+            .iter()
+            .enumerate()
+            .map(|(i, cpu)| Line::from(format!("core {i:>2}\t{:>3.0}%", cpu.cpu_usage())))
+            .collect();
+
+        let block = panel(&format!("CPU {average:.0}%"));
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
+    fn render_memory(&mut self, frame: &mut Frame, area: Rect) {
+        let gb = |bytes: u64| bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+
+        let sys = &self.system;
+
+        let lines = vec![
+            Line::from(format!(
+                "RAM {:.1}/{:.1} GB",
+                gb(sys.used_memory()),
+                gb(sys.total_memory()),
+            )),
+            Line::from(format!(
+                "Swap {:.1}/{:.1} GB",
+                gb(sys.used_swap()),
+                gb(sys.total_swap()),
+            )),
+        ];
+
+        frame.render_widget(Paragraph::new(lines).block(panel("Memory")), area);
     }
 }
